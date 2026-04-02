@@ -17,7 +17,36 @@ import requests
 import websocket
 
 BASE_URL = "https://cst.uf-tree.com"
-CDP_LIST = "http://localhost:9223/json/list"
+
+# 支持的浏览器 CDP 端口
+BROWSERS = [
+    {"name": "Edge", "port": 9223, "url": "http://localhost:9223/json"},
+    {"name": "Chrome", "port": 18800, "url": "http://localhost:18800/json"},
+]
+
+
+def find_browser():
+    """自动检测可用的浏览器，优先返回包含财税通页面的浏览器"""
+    available = []
+    for browser in BROWSERS:
+        try:
+            pages = requests.get(browser["url"], timeout=6).json()
+            # 检查是否有财税通页面
+            has_cst = any("cst.uf-tree.com" in p.get("url", "") for p in pages)
+            available.append({**browser, "has_cst": has_cst, "page_count": len(pages)})
+        except Exception:
+            continue
+
+    if not available:
+        return None
+
+    # 优先返回有财税通页面的浏览器
+    for b in available:
+        if b["has_cst"]:
+            return b
+
+    # 如果都没有财税通页面，返回第一个可用的
+    return available[0]
 
 
 def fail(msg):
@@ -30,15 +59,15 @@ def ok(msg):
     return True
 
 
-def get_auth():
-    pages = requests.get(CDP_LIST, timeout=6).json()
+def get_auth(browser):
+    pages = requests.get(browser["url"], timeout=6).json()
     ws_url = None
     for p in pages:
         if "cst.uf-tree.com" in p.get("url", ""):
             ws_url = p.get("webSocketDebuggerUrl")
             break
     if not ws_url:
-        raise RuntimeError("未发现 cst.uf-tree.com 页面")
+        raise RuntimeError(f"未在 {browser['name']} 中发现 cst.uf-tree.com 页面")
 
     ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
     ws.send(json.dumps({
@@ -79,17 +108,39 @@ def api_post(token, endpoint, payload):
 def main():
     all_ok = True
 
+    # 0) 浏览器检测
+    print("---- 浏览器检测 ----")
+    browser = find_browser()
+    if not browser:
+        fail("未检测到可用的浏览器")
+        print("\n请按以下步骤操作：")
+        print("1. 打开 Edge 浏览器:")
+        print("   /Applications/Microsoft\\ Edge.app/Contents/MacOS/Microsoft\\ Edge --remote-debugging-port=9223 --remote-allow-origins=*")
+        print("2. 或打开 Chrome 浏览器:")
+        print("   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=18800 --remote-allow-origins=*")
+        print("3. 登录 https://cst.uf-tree.com")
+        return 1
+
+    print(f"✅ 检测到 {browser['name']} 浏览器 (端口 {browser['port']})")
+    if browser["has_cst"]:
+        print(f"✅ 已发现财税通页面")
+    else:
+        print(f"⚠️  {browser['name']} 中未发现财税通页面，请先登录 https://cst.uf-tree.com")
+        return 1
+
+    print()
+
     # 1) CDP reachable
     try:
-        pages = requests.get(CDP_LIST, timeout=6).json()
+        pages = requests.get(browser["url"], timeout=6).json()
         all_ok &= ok(f"CDP 可用，页面数: {len(pages)}")
     except Exception as e:
-        fail(f"无法访问 CDP 9223: {e}")
+        fail(f"无法访问 CDP {browser['port']}: {e}")
         return 1
 
     # 2-3) auth
     try:
-        auth = get_auth()
+        auth = get_auth(browser)
         token = auth["token"]
         cid = auth["companyId"]
         cname = auth.get("companyName", "")

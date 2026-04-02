@@ -27,7 +27,12 @@ import requests
 import websocket
 
 BASE_URL = "https://cst.uf-tree.com"
-CDP_URL = "http://localhost:9223/json/list"
+
+# 支持的浏览器 CDP 端口
+BROWSERS = [
+    {"name": "Edge", "port": 9223, "url": "http://localhost:9223/json"},
+    {"name": "Chrome", "port": 18800, "url": "http://localhost:18800/json"},
+]
 
 DOC_TYPES = ["报销单", "借款单", "批量付款单", "申请单"]
 
@@ -40,11 +45,61 @@ class Auth:
 
 
 # ---------------------------
+# Browser Detection
+# ---------------------------
+
+def find_browser():
+    """自动检测可用的浏览器，优先返回包含财税通页面的浏览器"""
+    available = []
+    for browser in BROWSERS:
+        try:
+            pages = requests.get(browser["url"], timeout=6).json()
+            # 检查是否有财税通页面
+            has_cst = any("cst.uf-tree.com" in p.get("url", "") for p in pages)
+            available.append({**browser, "has_cst": has_cst, "page_count": len(pages)})
+        except Exception:
+            continue
+
+    if not available:
+        return None
+
+    # 优先返回有财税通页面的浏览器
+    for b in available:
+        if b["has_cst"]:
+            return b
+
+    # 如果都没有财税通页面，返回第一个可用的
+    return available[0]
+
+
+# ---------------------------
 # Auth & API
 # ---------------------------
 
-def get_auth_from_edge() -> Auth:
-    pages = requests.get(CDP_URL, timeout=8).json()
+def get_auth_from_edge(token_override=None, company_id_override=None, company_name_override=None) -> Auth:
+    # 如果直接提供了 token, 使用直接模式
+    if token_override and company_id_override:
+        return Auth(
+            token=token_override,
+            company_id=int(company_id_override),
+            company_name=company_name_override or f"company_{company_id_override}",
+        )
+
+    # 否则从 CDP 读取
+    browser = find_browser()
+    if not browser:
+        raise RuntimeError("未检测到可用的浏览器。请按以下步骤操作：\n"
+                          "1. 打开 Edge 浏览器:\n"
+                          "   /Applications/Microsoft\\ Edge.app/Contents/MacOS/Microsoft\\ Edge --remote-debugging-port=9223 --remote-allow-origins=*\n"
+                          "2. 或打开 Chrome 浏览器:\n"
+                          "   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=18800 --remote-allow-origins=*\n"
+                          "3. 登录 https://cst.uf-tree.com\n"
+                          "或使用 --token 和 --company-id 参数直接指定。")
+
+    if not browser["has_cst"]:
+        raise RuntimeError(f"{browser['name']} 中未发现财税通页面，请先登录 https://cst.uf-tree.com")
+
+    pages = requests.get(browser["url"], timeout=8).json()
     ws_url = None
     for p in pages:
         if "cst.uf-tree.com" in p.get("url", ""):
@@ -52,7 +107,7 @@ def get_auth_from_edge() -> Auth:
             break
 
     if not ws_url:
-        raise RuntimeError("未找到财税通页面。请先登录 cst.uf-tree.com 并开启 9223 调试端口。")
+        raise RuntimeError(f"未找到财税通页面（浏览器：{browser['name']}）")
 
     ws = websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
     ws.send(json.dumps({
@@ -352,6 +407,11 @@ def unmerge_all(ws):
         ws.unmerge_cells(str(mr))
 
 
+def clear_data_validations(ws):
+    """移除所有数据验证（下拉选项）"""
+    ws.data_validations = openpyxl.worksheet.datavalidation.DataValidationList()
+
+
 def merge_same(ws, col: int, start_row: int, end_row: int):
     r = start_row
     while r <= end_row:
@@ -372,8 +432,10 @@ def write_by_customer_template(template_path: Path, out_path: Path, auth: Auth, 
     wsb = wb["基础数据"]
 
     # 为了重写并合并，先取消已有合并（只动 1/2/3）
+    # 同时移除所有数据验证（下拉选项）
     for ws in [ws1, ws2, ws3]:
         unmerge_all(ws)
+        clear_data_validations(ws)
 
     clear_range(ws1, 4, 220, 1, 8)
     clear_range(ws2, 4, 220, 1, 8)
@@ -451,6 +513,17 @@ def write_by_customer_template(template_path: Path, out_path: Path, auth: Auth, 
         wsb.cell(rr, 6).value = DOC_TYPES[i % len(DOC_TYPES)]
         wsb.cell(rr, 7).value = "是"
 
+    # 保存前再次清除所有数据验证（确保标题行的下拉选项也被清除）
+    # 同时移除所有自动筛选（只保留第二列的筛选稍后手动设置）
+    for ws in [ws1, ws2, ws3, wsb]:
+        clear_data_validations(ws)
+        ws.auto_filter.ref = None
+
+    # 为每个主要 sheet 设置只筛选第二列（B列：是否导入/是否执行/是否创建）
+    ws1.auto_filter.ref = "B3"
+    ws2.auto_filter.ref = "B3"
+    ws3.auto_filter.ref = "B3"
+
     wb.save(out_path)
 
     # 输出报告
@@ -482,6 +555,9 @@ def main():
     parser = argparse.ArgumentParser(description="基于客户模板生成三表（Agent1）")
     parser.add_argument("--template", required=True, help="客户模板xlsx路径")
     parser.add_argument("--output", required=False, help="输出xlsx路径")
+    parser.add_argument("--token", required=False, help="直接使用 token (无需 CDP)")
+    parser.add_argument("--company-id", required=False, help="直接使用 company ID (无需 CDP)")
+    parser.add_argument("--company-name", required=False, default="凯旋创智测试集团", help="企业名称")
     parser.add_argument("--keep-group-inheritance", action="store_true", help="Sheet3分组按继承视觉输出（同组后续行留空）")
     args = parser.parse_args()
 
@@ -489,7 +565,19 @@ def main():
     if not template.exists():
         raise FileNotFoundError(f"模板不存在: {template}")
 
-    auth = get_auth_from_edge()
+    # 检测并显示使用的浏览器
+    if not args.token or not args.company_id:
+        browser = find_browser()
+        if browser:
+            print(f"✅ 检测到 {browser['name']} 浏览器 (端口 {browser['port']})")
+        else:
+            print("⚠️  未检测到可用浏览器，尝试直接获取...")
+
+    auth = get_auth_from_edge(
+        token_override=args.token,
+        company_id_override=args.company_id,
+        company_name_override=args.company_name,
+    )
     sources = fetch_sources(auth)
 
     out = Path(args.output) if args.output else template.parent / f"三表联动_客户模板_公司{auth.company_id}_{time.strftime('%Y%m%d_%H%M%S')}.xlsx"
