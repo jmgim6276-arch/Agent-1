@@ -162,8 +162,32 @@ def unique_names(seq: List[str]) -> List[str]:
         if x and x not in seen:
             seen.add(x)
             out.append(x)
-    return out
 
+    # 验证单据模板名称与第二张表的一致性
+    sheet2_doc_names = set()
+    for r in sheet2_rows:
+        doc_name = r.get("归属单据名称", "").strip()
+        if doc_name:
+            sheet2_doc_names.add(doc_name)
+    
+    # 验证一致性
+    sheet3_doc_names = set()
+    for r in out:
+        template_name = r.get("单据模板名称", "").strip()
+        if template_name:
+            sheet3_doc_names.add(template_name)
+    
+    # 检查不一致
+    mismatched = sheet2_doc_names - sheet3_doc_names
+    if mismatched:
+        # 打印不一致的名称
+        print("⚠️  Sheet2 和 Sheet3 的单据名称不一致：")
+        for name in sorted(mismatched):
+            print(f"  - {name}")
+    
+    # 返回 out
+        return out
+        return out
 
 def fetch_sources(auth: Auth) -> Dict:
     users_resp = api_post(auth, "/api/member/department/queryCompany", {"companyId": auth.company_id})
@@ -323,12 +347,13 @@ def generate_sheet2(primary_subjects: List[str], users: List[str]):
 def build_sheet3_from_sheet2(sheet2_rows: List[Dict], roles: List[str], users: List[str], deps: List[str], workflow_name: str, inherit_group_visual=True):
     # 汇总同名单据 - 直接复用 Sheet2 中的单据名称，避免重复
     agg: Dict[str, Dict] = {}
-    doc_names = set()  # 用于避免重复的单据名称
 
     for r in sheet2_rows:
+        # 单据名称不加时间前缀，保持和 Sheet2 一致
         name = (r.get("归属单据名称") or "").strip()
         if not name:
             continue
+
         doc_type = (r.get("归属单据类型") or "").strip()
         has_people = bool((r.get("单据适配人员") or "").strip())
         leaf = (r.get("三级费用科目") or "").strip() or (r.get("二级费用科目") or "").strip()
@@ -337,8 +362,6 @@ def build_sheet3_from_sheet2(sheet2_rows: List[Dict], roles: List[str], users: L
         agg[name]["any_people"] = agg[name]["any_people"] or has_people
         if leaf:
             agg[name]["leafs"].add(leaf)
-        # 添加到去重集合
-        doc_names.add(name)
 
     group_map = {
         "报销单": "报销类单据",
