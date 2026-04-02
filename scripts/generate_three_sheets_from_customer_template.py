@@ -463,7 +463,7 @@ def write_by_customer_template(template_path: Path, out_path: Path, auth: Auth, 
     sheet3_rows = build_sheet3_from_sheet2(
         sheet2_rows,
         roles=sources["roles"],
-        users=sources["users"],
+        users=sheet1_names,  # 使用 Sheet1 员工姓名，而不是 API 用户
         deps=sources["departments"],
         workflow_name=sources["workflow_name"],
         inherit_group_visual=inherit_group_visual,
