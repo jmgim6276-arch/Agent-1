@@ -248,6 +248,7 @@ def generate_sheet2(primary_subjects: List[str], users: List[str]):
     1) 二级科目下 >=2 个三级
     2) 三级全局不重复
     3) 同一单据名称：人员状态统一（全有 or 全无）
+    4) 三级费用科目可以为空（灵活结构）
     """
 
     if not primary_subjects:
@@ -262,24 +263,24 @@ def generate_sheet2(primary_subjects: List[str], users: List[str]):
         ("申请单", "用章申请单", False),
     ]
 
-    # 每个二级至少2个三级
+    # 每个二级至少2个三级，三级可以为空
     blocks = [
-        # 一级, 二级, 三级列表, 单据类型, 单据名称
-        (primary_subjects[0 % len(primary_subjects)], "差旅交通费", ["高铁票", "机票", "网约车费"], "报销单", "差旅报销单"),
-        (primary_subjects[0 % len(primary_subjects)], "差旅住宿费", ["酒店住宿费", "民宿住宿费"], "报销单", "差旅报销单"),
-        (primary_subjects[1 % len(primary_subjects)], "办公耗材费", ["打印纸", "墨盒硒鼓", "文件夹"], "报销单", "日常报销单"),
-        (primary_subjects[1 % len(primary_subjects)], "办公设备费", ["键盘", "显示器"], "报销单", "日常报销单"),
-        (primary_subjects[2 % len(primary_subjects)], "采购原材料", ["食材采购", "调味辅料"], "批量付款单", "采购付款单"),
-        (primary_subjects[2 % len(primary_subjects)], "供应商服务费", ["物流服务费", "仓储服务费"], "批量付款单", "采购付款单"),
-        (primary_subjects[3 % len(primary_subjects)], "门店备用金", ["日常备用金", "应急备用金"], "借款单", "门店借款单"),
-        (primary_subjects[3 % len(primary_subjects)], "合同与印章", ["合同盖章", "证明开具"], "申请单", "用章申请单"),
+        # 一级, 二级, 三级列表, 四级列表(可选), 单据类型, 单据名称, 是否有三级
+        (primary_subjects[0 % len(primary_subjects)], "差旅交通费", ["高铁票", "机票", ""], [], "报销单", "差旅报销单", True),
+        (primary_subjects[0 % len(primary_subjects)], "差旅住宿费", ["酒店住宿费", "民宿住宿费"], [], "报销单", "差旅报销单", True),
+        (primary_subjects[1 % len(primary_subjects)], "办公耗材费", ["打印纸", "墨盒硒鼓"], [], "报销单", "日常报销单", True),
+        (primary_subjects[1 % len(primary_subjects)], "办公设备费", ["键盘", ""], [], "报销单", "日常报销单", True),
+        (primary_subjects[2 % len(primary_subjects)], "采购原材料", ["食材采购", "调味辅料"], [], "批量付款单", "采购付款单", True),
+        (primary_subjects[2 % len(primary_subjects)], "供应商服务费", ["物流服务费", ""], [], "批量付款单", "采购付款单", True),
+        (primary_subjects[3 % len(primary_subjects)], "门店备用金", ["日常备用金"], [], "借款单", "门店借款单", True),
+        (primary_subjects[3 % len(primary_subjects)], "合同与印章", ["合同盖章", "证明开具"], [], "申请单", "用章申请单", True),
     ]
 
     people_policy = {doc_name: has_people for _, doc_name, has_people in doc_plan}
 
     used_third = set()
     rows = []
-    for lvl1, lvl2, thirds, doc_type, doc_name in blocks:
+    for lvl1, lvl2, thirds, fourths, doc_type, doc_name, has_third in blocks:
         # 全局去重三级
         third_unique = []
         for t in thirds:
@@ -289,9 +290,15 @@ def generate_sheet2(primary_subjects: List[str], users: List[str]):
                 x = f"{t}{n}"
                 n += 1
             used_third.add(x)
-            third_unique.append(x)
+            third_unique.append(x)  # 保留空的三级，不要跳过
 
+        # 为每个三级生成对应的行（三级和四级保持一致：要么都有，要么都为空）
         for t in third_unique:
+            four = ""  # 默认为空
+            # 只有三级有内容时，才生成四级（可以为空或空内容）
+            if t and fourths:
+                four = fourths[0] if fourths[0] else ""
+
             people = ""
             if people_policy.get(doc_name) and len(users) >= 2:
                 people = "，".join(random.sample(users, 2))
@@ -300,6 +307,7 @@ def generate_sheet2(primary_subjects: List[str], users: List[str]):
                 "一级费用科目": lvl1,
                 "二级费用科目": lvl2,
                 "三级费用科目": t,
+                "四级费用科目": four,
                 "归属单据类型": doc_type,
                 "归属单据名称": doc_name,
                 "单据适配人员": people,
@@ -307,8 +315,8 @@ def generate_sheet2(primary_subjects: List[str], users: List[str]):
                 "备注": "二级>=2三级；三级全局不重复；同单据人员状态统一",
             })
 
-    # 为 merge 展示排序（一级/二级连续）
-    rows.sort(key=lambda r: (r["一级费用科目"], r["二级费用科目"], r["三级费用科目"]))
+    # 为 merge 展示排序（一级/二级/三级/四级连续）
+    rows.sort(key=lambda r: (r["一级费用科目"], r["二级费用科目"], r["三级费用科目"], r["四级费用科目"]))
     return rows
 
 
@@ -341,26 +349,34 @@ def build_sheet3_from_sheet2(sheet2_rows: List[Dict], roles: List[str], users: L
         if dt not in DOC_TYPES:
             continue
 
-        vis_type = ["角色", "员工", "部门"][i % 3]
-        if vis_type == "角色":
+        vis_type = ["角色", "员工", "部门", "全员"][i % 4]
+        # 可见范围类型可以为空
+        if vis_type == "全员":
+            vis_obj = ""
+            vis_obj_type = "全员"
+        elif vis_type == "角色":
             vis_obj = random.choice(roles) if roles else "部门负责人"
+            vis_obj_type = "角色"
         elif vis_type == "员工":
             vis_obj = random.choice(users) if users else "企业负责人"
-        else:
+            vis_obj_type = "员工"
+        else:  # 部门
             vis_obj = random.choice(deps) if deps else "财务部"
+            vis_obj_type = "部门"
 
         # 费用限制规则
+        # 如果有人员，使用费用角色限制；否则不做限制
         if dt in ["报销单", "批量付款单"]:
-            limit_mode = "费用角色限制" if (doc_name and info["any_people"]) else "直接限制末级费用科目"
+            if doc_name and info["any_people"]:
+                limit_mode = "费用角色限制"
+                target = f"费用角色:{doc_name}"
+            else:
+                limit_mode = ""  # 不做限制
+                target = ""
         else:
-            limit_mode = "不处理费用限制"
-
-        target = "-"
-        if limit_mode == "费用角色限制":
-            target = f"费用角色:{doc_name}"
-        elif limit_mode == "直接限制末级费用科目":
-            target = "末级科目:" + "，".join(sorted(info["leafs"]))
-
+            # 其他单据类型不处理费用限制
+            limit_mode = ""
+            target = ""
         out.append({
             "单据分组（一级目录）": group_map[dt],
             "单据大类（二级目录）": dt,
@@ -438,11 +454,12 @@ def write_by_customer_template(template_path: Path, out_path: Path, auth: Auth, 
         clear_data_validations(ws)
 
     clear_range(ws1, 4, 220, 1, 8)
-    clear_range(ws2, 4, 220, 1, 8)
+    clear_range(ws2, 4, 220, 1, 9)  # 扩展到第9列（新增四级科目）
     clear_range(ws3, 4, 220, 1, 8)
 
     sheet1_rows = generate_sheet1(auth.company_name, sources["departments"], employee_count=10)
-    sheet2_rows = generate_sheet2(sources["primary_subjects"], sources["users"])
+    sheet1_names = [r["姓名"] for r in sheet1_rows]  # 提取 Sheet1 员工姓名
+    sheet2_rows = generate_sheet2(sources["primary_subjects"], sheet1_names)  # 只用 Sheet1 的员工
     sheet3_rows = build_sheet3_from_sheet2(
         sheet2_rows,
         roles=sources["roles"],
@@ -475,7 +492,8 @@ def write_by_customer_template(template_path: Path, out_path: Path, auth: Auth, 
         ws2.cell(r, 5).value = row["三级费用科目"]
         ws2.cell(r, 6).value = row["归属单据名称"]
         ws2.cell(r, 7).value = row["单据适配人员"]
-        ws2.cell(r, 8).value = row["备注"]
+        ws2.cell(r, 8).value = row["四级费用科目"]  # 新增四级科目列
+        ws2.cell(r, 9).value = row["备注"]  # 备注移到第9列
         r += 1
     end2 = r - 1
 
