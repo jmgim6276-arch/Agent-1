@@ -321,8 +321,10 @@ def generate_sheet2(primary_subjects: List[str], users: List[str]):
 
 
 def build_sheet3_from_sheet2(sheet2_rows: List[Dict], roles: List[str], users: List[str], deps: List[str], workflow_name: str, inherit_group_visual=True):
-    # 汇总同名单据
+    # 汇总同名单据 - 直接复用 Sheet2 中的单据名称，避免重复
     agg: Dict[str, Dict] = {}
+    doc_names = set()  # 用于避免重复的单据名称
+
     for r in sheet2_rows:
         name = (r.get("归属单据名称") or "").strip()
         if not name:
@@ -335,6 +337,8 @@ def build_sheet3_from_sheet2(sheet2_rows: List[Dict], roles: List[str], users: L
         agg[name]["any_people"] = agg[name]["any_people"] or has_people
         if leaf:
             agg[name]["leafs"].add(leaf)
+        # 添加到去重集合
+        doc_names.add(name)
 
     group_map = {
         "报销单": "报销类单据",
